@@ -23,22 +23,24 @@
 # DEALINGS IN THE SOFTWARE.
 
 CC     = gcc
+CXX    = g++
 AR     = ar
 RANLIB = ranlib
 
 # Default libraries to link if configure is not used
-htslib_default_libs = -lz -lm -lbz2 -llzma
+htslib_default_libs = -lz -lm -lbz2 -llzma -lstdc++
 
-CPPFLAGS =
+CPPFLAGS = -ggdb3 -std=c++11 -Wall -O3
 # TODO: probably update cram code to make it compile cleanly with -Wc++-compat
 # For testing strict C99 support add -std=c99 -D_XOPEN_SOURCE=600
 #CFLAGS   = -g -Wall -O2 -pedantic -std=c99 -D_XOPEN_SOURCE=600 -D__FUNCTION__=__func__
-CFLAGS   = -g -Wall -O2
+CFLAGS   = -Wall -O3 -std=c11
 EXTRA_CFLAGS_PIC = -fpic
 LDFLAGS  =
 LIBS     = $(htslib_default_libs)
 
 prefix      = /usr/local
+includesqc  = $(CURDIR)/cram/sqc
 exec_prefix = $(prefix)
 bindir      = $(exec_prefix)/bin
 includedir  = $(prefix)/include
@@ -96,6 +98,7 @@ include htslib_vars.mk
 # If not using GNU make, you need to copy the version number from version.sh
 # into here.
 PACKAGE_VERSION := $(shell ./version.sh)
+SQC_PACKAGE_VERSION := $(shell ./version_sqc.sh)
 LIBHTS_SOVERSION = 2
 
 # $(NUMERIC_VERSION) is for items that must have a numeric X.Y.Z string
@@ -104,25 +107,37 @@ NUMERIC_VERSION := $(shell ./version.sh numeric)
 
 # Force version.h to be remade if $(PACKAGE_VERSION) has changed.
 version.h: $(if $(wildcard version.h),$(if $(findstring "$(PACKAGE_VERSION)",$(shell cat version.h)),,force))
+version_sqc.h: $(if $(wildcard version_sqc.h),$(if $(findstring "$(SQC_PACKAGE_VERSION)",$(shell cat version_sqc.h)),,force))
 
 version.h:
 	echo '#define HTS_VERSION "$(PACKAGE_VERSION)"' > $@
+version_sqc.h:
+	echo '#define SQC_VERSION "$(SQC_PACKAGE_VERSION)"' > $@
 
 print-version:
-	@echo $(PACKAGE_VERSION)
+	@echo $(PACKAGE_VERSION) $(SQC_PACKAGE_VERSION)
 
 show-version:
 	@echo PACKAGE_VERSION = $(PACKAGE_VERSION)
+	@echo SQC_PACKAGE_VERSION = $(SQC_PACKAGE_VERSION)
 	@echo NUMERIC_VERSION = $(NUMERIC_VERSION)
 
 .SUFFIXES: .bundle .c .cygdll .dll .o .pico .so
 
 .c.o:
-	$(CC) $(CFLAGS) -I. $(CPPFLAGS) -c -o $@ $<
+	#$(CC) $(CFLAGS) -I. -c -o $@ $<
+	$(CC) -ggdb3 -Wall -O3 -I. -I$(includesqc) -c -o $@ $<
+
+.cc.o:
+	#$(CXX) -std=c++11 $(CPPFLAGS) -I. -I$(includesqc) -c -o $@ $<
+	$(CXX) -ggdb3 -std=c++11 -Wall -O3 -I. -I$(includesqc) -c -o $@ $<
 
 .c.pico:
-	$(CC) $(CFLAGS) -I. $(CPPFLAGS) $(EXTRA_CFLAGS_PIC) -c -o $@ $<
+	$(CC) -I. -I$(includesqc) -ggdb3 -Wall -O3 $(EXTRA_CFLAGS_PIC) -c -o $@ $<
 
+.cc.pico:
+	#$(CXX) -I. -I$(includesqc) $(CPPFLAGS) $(EXTRA_CFLAGS_PIC) -c -o $@ $<
+	$(CXX) -I. -I$(includesqc) -ggdb3 -std=c++11 -Wall -O3 $(EXTRA_CFLAGS_PIC) -c -o $@ $<
 
 LIBHTS_OBJS = \
 	kfunc.o \
@@ -163,7 +178,18 @@ LIBHTS_OBJS = \
 	cram/pooled_alloc.o \
 	cram/rANS_static.o \
 	cram/sam_header.o \
-	cram/string_alloc.o
+	cram/string_alloc.o \
+	cram/sqc/sqc_wrapper.o \
+	cram/sqc/CABAC_ArithmeticDecoder.o \
+	cram/sqc/CABAC_ArithmeticEncoder.o \
+	cram/sqc/CABAC_BitstreamFile.o \
+	cram/sqc/ContextModel.o \
+	cram/sqc/SAMPileup.o \
+	cram/sqc/SAMPileupDeque.o \
+	cram/sqc/SAMRecord.o \
+	cram/sqc/SQCCodec.o
+
+	
 
 PLUGIN_EXT  =
 PLUGIN_OBJS =
@@ -298,7 +324,7 @@ hfile_gcs.o hfile_gcs.pico: hfile_gcs.c config.h $(htslib_hts_h) $(htslib_kstrin
 hfile_libcurl.o hfile_libcurl.pico: hfile_libcurl.c config.h $(hfile_internal_h) $(htslib_hts_h) $(htslib_kstring_h) $(htslib_khash_h)
 hfile_net.o hfile_net.pico: hfile_net.c config.h $(hfile_internal_h) $(htslib_knetfile_h)
 hfile_s3.o hfile_s3.pico: hfile_s3.c config.h $(hfile_internal_h) $(htslib_hts_h) $(htslib_kstring_h)
-hts.o hts.pico: hts.c config.h $(htslib_hts_h) $(htslib_bgzf_h) $(cram_h) $(htslib_hfile_h) $(htslib_hts_endian_h) version.h $(hts_internal_h) $(hfile_internal_h) $(htslib_hts_os_h) $(htslib_khash_h) $(htslib_kseq_h) $(htslib_ksort_h)
+hts.o hts.pico: hts.c config.h $(htslib_hts_h) $(htslib_bgzf_h) $(cram_h) $(htslib_hfile_h) $(htslib_hts_endian_h) version.h version_sqc.h $(hts_internal_h) $(hfile_internal_h) $(htslib_hts_os_h) $(htslib_khash_h) $(htslib_kseq_h) $(htslib_ksort_h)
 hts_os.o hts_os.pico: hts_os.c config.h os/rand.c
 vcf.o vcf.pico: vcf.c config.h $(htslib_vcf_h) $(htslib_bgzf_h) $(htslib_tbx_h) $(htslib_hfile_h) $(hts_internal_h) $(htslib_khash_str2int_h) $(htslib_kstring_h) $(htslib_khash_h) $(htslib_kseq_h) $(htslib_hts_endian_h)
 sam.o sam.pico: sam.c config.h $(htslib_sam_h) $(htslib_bgzf_h) $(cram_h) $(hts_internal_h) $(htslib_hfile_h) $(htslib_khash_h) $(htslib_kseq_h) $(htslib_kstring_h) $(htslib_hts_endian_h)
@@ -336,13 +362,13 @@ thread_pool.o thread_pool.pico: thread_pool.c config.h $(thread_pool_internal_h)
 
 
 bgzip: bgzip.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ bgzip.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ bgzip.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 htsfile: htsfile.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ htsfile.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ htsfile.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 tabix: tabix.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ tabix.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ tabix.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 bgzip.o: bgzip.c config.h $(htslib_bgzf_h) $(htslib_hts_h)
 htsfile.o: htsfile.c config.h $(htslib_hfile_h) $(htslib_hts_h) $(htslib_sam_h) $(htslib_vcf_h)
@@ -365,40 +391,40 @@ check test: $(BUILT_PROGRAMS) $(BUILT_TEST_PROGRAMS)
 	cd test && REF_PATH=: ./test.pl $${TEST_OPTS:-}
 
 test/hts_endian: test/hts_endian.o
-	$(CC) $(LDFLAGS) -o $@ test/hts_endian.o $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ test/hts_endian.o $(LIBS) -lstdc++ 
 
 test/fieldarith: test/fieldarith.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/fieldarith.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/fieldarith.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/hfile: test/hfile.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/hfile.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/hfile.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/sam: test/sam.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/sam.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/sam.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/test_bgzf: test/test_bgzf.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test_bgzf.o libhts.a -lz $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test_bgzf.o libhts.a -lz $(LIBS) -lstdc++ -lpthread
 
 test/test_realn: test/test_realn.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test_realn.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test_realn.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/test-regidx: test/test-regidx.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test-regidx.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test-regidx.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/test_view: test/test_view.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test_view.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test_view.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/test-vcf-api: test/test-vcf-api.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test-vcf-api.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test-vcf-api.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/test-vcf-sweep: test/test-vcf-sweep.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test-vcf-sweep.o libhts.a $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test-vcf-sweep.o libhts.a $(LIBS) -lstdc++ -lpthread
 
 test/test-bcf-sr: test/test-bcf-sr.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test-bcf-sr.o libhts.a -lz $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test-bcf-sr.o libhts.a -lz $(LIBS) -lstdc++ -lpthread
 
 test/test-bcf-translate: test/test-bcf-translate.o libhts.a
-	$(CC) $(LDFLAGS) -o $@ test/test-bcf-translate.o libhts.a -lz $(LIBS) -lpthread
+	$(CC) $(LDFLAGS) -o $@ test/test-bcf-translate.o libhts.a -lz $(LIBS) -lstdc++ -lpthread
 
 test/hts_endian.o: test/hts_endian.c config.h $(htslib_hts_endian_h)
 test/fieldarith.o: test/fieldarith.c config.h $(htslib_sam_h)
@@ -485,7 +511,7 @@ testclean:
 	-rm -f test/*.tmp test/*.tmp.* test/tabix/*.tmp.* test/tabix/FAIL*
 
 mostlyclean: testclean
-	-rm -f *.o *.pico cram/*.o cram/*.pico test/*.o test/*.dSYM version.h
+	-rm -f *.o *.pico cram/*.o cram/*.pico test/*.o test/*.dSYM version.h version_sqc.h cram/sqc/*.o cram/sqc/*.pico
 
 clean: mostlyclean clean-$(SHLIB_FLAVOUR)
 	-rm -f libhts.a $(BUILT_PROGRAMS) $(BUILT_PLUGINS) $(BUILT_TEST_PROGRAMS) $(BUILT_THRASH_PROGRAMS)

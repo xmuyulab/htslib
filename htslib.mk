@@ -144,7 +144,26 @@ HTSLIB_ALL = \
 	$(HTSDIR)/cram/string_alloc.c \
 	$(HTSDIR)/cram/string_alloc.h \
 	$(HTSDIR)/os/lzma_stub.h \
-	$(HTSDIR)/os/rand.c
+	$(HTSDIR)/os/rand.c \
+	$(HTSDIR)/cram/sqc/sqc_wrapper.h \
+	$(HTSDIR)/cram/sqc/sqc_wrapper.cc \
+	$(HTSDIR)/cram/sqc/SAMPileup.h \
+	$(HTSDIR)/cram/sqc/SAMPileup.cc \
+	$(HTSDIR)/cram/sqc/SAMPileupDeque.h \
+	$(HTSDIR)/cram/sqc/SAMPileupDeque.cc \
+	$(HTSDIR)/cram/sqc/SAMRecord.h \
+	$(HTSDIR)/cram/sqc/SAMRecord.cc \
+	$(HTSDIR)/cram/sqc/SQCCodec.h \
+	$(HTSDIR)/cram/sqc/SQCCodec.cc \
+	$(HTSDIR)/cram/sqc/CABAC_ArithmeticDecoder.h \
+	$(HTSDIR)/cram/sqc/CABAC_ArithmeticDecoder.cc \
+	$(HTSDIR)/cram/sqc/CABAC_ArithmeticEncoder.h \
+	$(HTSDIR)/cram/sqc/CABAC_ArithmeticEncoder.cc \
+	$(HTSDIR)/cram/sqc/CABAC_BitstreamFile.h \
+	$(HTSDIR)/cram/sqc/CABAC_BitstreamFile.cc \
+	$(HTSDIR)/cram/sqc/ContextModel.h \
+	$(HTSDIR)/cram/sqc/ContextModel.cc \
+	
 
 $(HTSDIR)/config.h:
 	+cd $(HTSDIR) && $(MAKE) config.h

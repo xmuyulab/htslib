@@ -45,6 +45,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "htslib/hts.h"
 #include "htslib/hts_endian.h"
 
+#include "cram/cram_samtools.h"
+#include "sqc_wrapper.h"
 KHASH_MAP_INIT_STR(m_s2u64, uint64_t)
 
 #define Z_CRAM_STRAT Z_FILTERED
@@ -52,9 +54,31 @@ KHASH_MAP_INIT_STR(m_s2u64, uint64_t)
 //#define Z_CRAM_STRAT Z_HUFFMAN_ONLY
 //#define Z_CRAM_STRAT Z_DEFAULT_STRATEGY
 
+#define EXTENDED_CIGAR 1
+// print extended cigar
+static unsigned int num_digits(unsigned int n)
+{
+    static unsigned int a[5] = {0, 0xa, 0x64, 0x3E8, 0x2710};
+    int i; 
+    for(i = 0; i < 5; i++)
+        if(n >= a[i] && n < a[i+1])
+            return (i+1);
+    printf("error: num_digits overflow\n");
+    return 6;
+}
+
+static unsigned int print_cigar(char *cig, int cig_len, char cig_op)
+{
+    if (cig_len) {
+        sprintf(cig, "%d%c", cig_len, cig_op);
+        return num_digits(cig_len)+1;
+    }
+    return 0;
+}
+
 static int process_one_read(cram_fd *fd, cram_container *c,
                             cram_slice *s, cram_record *cr,
-                            bam_seq_t *b, int rnum);
+                            bam_seq_t *b, int rnum, char *ext_cig); // output extended cigar
 
 /*
  * Returns index of val into key.
@@ -826,9 +850,14 @@ static int cram_compress_slice(cram_fd *fd, cram_container *c, cram_slice *s) {
                     return -1;
         }
     } else {
+	if (fd->sqc.sqc_enc || fd->sqc.sqc_cut) {
+		if (sqc_finishBlock(s->sqc_qe, s->block[DS_QS], fd->sqc)) // write outputs in s->block[DS_QS]
+			return -1;
+	} else { // SQC_TODO: apply original samtools when sqc not enabled for quality compression
         if (cram_compress_block(fd, s->block[DS_QS], fd->m[DS_QS],
                                 method, level))
             return -1;
+	}
         if (cram_compress_block(fd, s->block[DS_BA], fd->m[DS_BA],
                                 method, level))
             return -1;
@@ -1292,6 +1321,21 @@ int cram_encode_container(cram_fd *fd, cram_container *c) {
         c->ref_seq_id = c->ref_id;
     }
 
+    // {{ calculate segment min and max for quality values
+    if (fd->sqc.sqc_enc) {
+		for (r1 = sn = 0; r1 < c->curr_c_rec; sn++) {
+			cram_slice *s = c->slices[sn];
+			// TODO: enable sqc_updateQualitySegMinMax only when sqc qualitySegMinMax table NOT initialized
+			for (r2 = 0; r1 < c->curr_c_rec && r2 < s->hdr->num_records; r1++, r2++) {
+				bam_seq_t *b = c->bams[r1];
+				sqc_updateQualitySegMinMax(s->sqc_qe, b, fd->sqc);
+			}
+			sqc_initRefOffsetVec(s->sqc_qe, fd->refs->nref);
+			//}
+		}
+    }
+    // }}
+
     /* Turn bams into cram_records and gather basic stats */
     for (r1 = sn = 0; r1 < c->curr_c_rec; sn++) {
         cram_slice *s = c->slices[sn];
@@ -1331,9 +1375,18 @@ int cram_encode_container(cram_fd *fd, cram_container *c) {
                     c->ref_end   = fd->refs->ref_id[c->ref_seq_id]->length;
                 }
             }
-
-            if (process_one_read(fd, c, s, cr, b, r2) != 0)
+#if EXTENDED_CIGAR
+            char ext_cig[1024];
+            memset(ext_cig, 0, sizeof(ext_cig));
+#endif
+            if (process_one_read(fd, c, s, cr, b, r2, ext_cig) != 0)
                 return -1;
+             
+            if (fd->sqc.sqc_enc) {
+            	bam_hdr_t *hdr = cram_header_to_bam(fd->header);
+            	sqc_addRecordToBlock(s->sqc_qe, hdr, b, ext_cig, fd->sqc);
+            	bam_hdr_destroy(hdr);
+            }
 
             if (first_base > cr->apos)
                 first_base = cr->apos;
@@ -2512,7 +2565,7 @@ static cram_container *cram_next_container(cram_fd *fd, bam_seq_t *b) {
  */
 static int process_one_read(cram_fd *fd, cram_container *c,
                             cram_slice *s, cram_record *cr,
-                            bam_seq_t *b, int rnum) {
+                            bam_seq_t *b, int rnum, char * ext_cig) {
     int i, fake_qual = -1;
     char *cp, *rg;
     char *ref, *seq, *qual;
@@ -2645,6 +2698,13 @@ static int process_one_read(cram_fd *fd, cram_container *c,
 
         cr->feature = 0;
         cr->nfeature = 0;
+
+#if EXTENDED_CIGAR
+        char * ext_cig_ptr = ext_cig;
+        char pre_cig_op = '\0';
+        int pre_cig_len = 0;
+        // printf("extended cigar string: ");
+#endif
         for (i = 0; i < cr->ncigar; i++) {
             enum cigar_op cig_op = cig_from[i] & BAM_CIGAR_MASK;
             uint32_t cig_len = cig_from[i] >> BAM_CIGAR_SHIFT;
@@ -2700,6 +2760,36 @@ static int process_one_read(cram_fd *fd, cram_container *c,
                                 if (cram_add_substitution(fd, c, s, cr, spos+l,
                                                           sp[l], qp[l], rp[l]))
                                     return -1;
+#if EXTENDED_CIGAR 
+                                if (pre_cig_len == 0) { // first cigar op
+                                    pre_cig_len = 1;
+                                    pre_cig_op = 'X';
+                                } else {
+                                    if (pre_cig_op == 'X') // cigar op unchanged
+                                        pre_cig_len++;
+                                    else { // cigar op changed
+//                                        printf("%d%c", pre_cig_len, pre_cig_op);
+                                        ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                                        pre_cig_len = 1;
+                                        pre_cig_op = 'X';
+                                    }
+                                } 
+                            }
+                        }
+                        else { // rp[l] == sp[l]
+                            if (pre_cig_len == 0) { // first cigar op
+                                pre_cig_len = 1;
+                                pre_cig_op = '=';
+                            } else {
+                                if (pre_cig_op == '=') // cigar op unchanged
+                                    pre_cig_len++;
+                                else { // cigar op changed
+//                                    printf("%d%c", pre_cig_len, pre_cig_op);
+                                    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                                    pre_cig_len = 1;
+                                    pre_cig_op = '=';
+                                }
+#endif
                             }
                         }
                     }
@@ -2743,6 +2833,21 @@ static int process_one_read(cram_fd *fd, cram_container *c,
                 if (cram_add_deletion(c, s, cr, spos, cig_len, &seq[spos]))
                     return -1;
                 apos += cig_len;
+#if EXTENDED_CIGAR
+                if (pre_cig_len == 0) { // first cigar op
+                	pre_cig_len = cig_len;
+                	pre_cig_op = 'D';
+                } else {
+                	if (pre_cig_op == 'D') // cigar op unchanged
+                        pre_cig_len += cig_len;
+                    else { // cigar op changed
+//                        printf("%d%c", pre_cig_len, pre_cig_op);
+                        ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                        pre_cig_len = cig_len;
+                        pre_cig_op = 'D';
+                    }
+                }
+#endif
                 break;
 
             case BAM_CREF_SKIP:
@@ -2755,6 +2860,21 @@ static int process_one_read(cram_fd *fd, cram_container *c,
                 if (cram_add_insertion(c, s, cr, spos, cig_len,
                                        cr->len ? &seq[spos] : NULL))
                     return -1;
+#if EXTENDED_CIGAR                
+                if (pre_cig_len == 0) { // first cigar op
+                	pre_cig_len = cig_len;
+                	pre_cig_op = 'I';
+                } else {
+                    if (pre_cig_op == 'I') // cigar op unchanged
+                        pre_cig_len += cig_len;
+                    else { // cigar op changed
+//                        printf("%d%c", pre_cig_len, pre_cig_op);
+                        ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                        pre_cig_len = cig_len;
+                        pre_cig_op = 'I';
+                    }
+                }
+#endif                
                 if (fd->no_ref && cr->len) {
                     for (l = 0; l < cig_len; l++, spos++) {
                         cram_add_quality(fd, c, s, cr, spos, qual[spos]);
@@ -2769,7 +2889,21 @@ static int process_one_read(cram_fd *fd, cram_container *c,
                                       cr->len ? &seq[spos] : NULL,
                                       fd->version))
                     return -1;
-
+#if EXTENDED_CIGAR
+                if (pre_cig_len == 0) { // first cigar op
+                	pre_cig_len = cig_len;
+                	pre_cig_op = 'S';
+                } else {
+                    if (pre_cig_op == 'S') { // cigar op unchanged
+                        pre_cig_len += cig_len;
+                    } else { // cigar op changed
+//                        printf("%d%c", pre_cig_len, pre_cig_op);
+                        ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                        pre_cig_len = cig_len;
+                        pre_cig_op = 'S';
+                    }
+                }
+#endif
                 if (fd->no_ref &&
                     !(cr->cram_flags & CRAM_FLAG_PRESERVE_QUAL_SCORES)) {
                     if (cr->len) {
@@ -2789,6 +2923,22 @@ static int process_one_read(cram_fd *fd, cram_container *c,
             case BAM_CHARD_CLIP:
                 if (cram_add_hardclip(c, s, cr, spos, cig_len, &seq[spos]))
                     return -1;
+#if EXTENDED_CIGAR
+                // assert(pre_cig_len == 0 || pre_cig_op != 'H');
+                if (pre_cig_len == 0) { // first cigar op
+                	pre_cig_len = cig_len;
+                	pre_cig_op = 'H';
+                } else {
+                    if (pre_cig_op == 'H') { // cigar op unchanged
+                        pre_cig_len += cig_len;
+                    } else { // cigar op changed
+//                        printf("%d%c", pre_cig_len, pre_cig_op);
+                        ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                        pre_cig_len = cig_len;
+                        pre_cig_op = 'H';
+                    }
+                }
+#endif                
                 break;
 
             case BAM_CPAD:
@@ -2808,6 +2958,13 @@ static int process_one_read(cram_fd *fd, cram_container *c,
         fake_qual = spos;
         cr->aend = fd->no_ref ? apos : MIN(apos, c->ref_end);
         cram_stats_add(c->stats[DS_FN], cr->nfeature);
+
+#if EXTENDED_CIGAR
+//    printf("%d%c", pre_cig_len, pre_cig_op);
+//    printf("\t");
+    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+#endif
+
     } else {
         // Unmapped
         cr->cram_flags |= CRAM_FLAG_PRESERVE_QUAL_SCORES;

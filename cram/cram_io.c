@@ -1455,6 +1455,7 @@ char *cram_block_method2str(enum cram_block_method m) {
     case RANS0:    return "RANS0";
     case RANS1:    return "RANS1";
     case GZIP_RLE: return "GZIP_RLE";
+    case AGI_SQC:  return "AGI_SQC";
     case BM_ERROR: break;
     }
     return "?";
@@ -3401,6 +3402,9 @@ void cram_free_slice(cram_slice *s) {
     if (s->aux_block)
         free(s->aux_block);
 
+    if (s->sqc_qe)
+    	sqc_SQCCodec_destroy(s->sqc_qe);
+
     free(s);
 }
 
@@ -3453,6 +3457,7 @@ cram_slice *cram_new_slice(enum cram_content_type type, int nrecs) {
     s->BA_len = 0;
 #endif
 
+    if (!(s->sqc_qe = sqc_SQCCodec_create()))	goto err; // SQC_TODO: this is for use at encoder side
     return s;
 
  err:
@@ -3544,6 +3549,15 @@ cram_slice *cram_read_slice(cram_fd *fd) {
 
     s->last_apos = s->hdr->ref_seq_start;
     s->decode_md = fd->decode_md;
+
+    // {{
+    if (fd->sqc.sqc_dec) {
+    	if (s->sqc_qe == NULL) {
+    		if (!(s->sqc_qe = sqc_SQCCodec_create()))	goto err; // SQC_TODO: this is for use at decoder side
+    		sqc_initRefOffsetVec(s->sqc_qe, fd->refs->nref);
+    	}
+    }
+    // }}
 
     return s;
 

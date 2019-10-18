@@ -55,6 +55,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "cram/mFILE.h"
 #include "htslib/khash.h"
 
+#include "cram/sqc/sqc_wrapper.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -201,6 +202,7 @@ enum cram_block_method {
     RANS0    = 4,
     RANS1    = 10, // Not externalised; stored as RANS (generic)
     GZIP_RLE = 11, // NB: not externalised in CRAM
+	AGI_SQC	 = 12, // AGInome Scalable Quality Compression
 };
 
 enum cram_content_type {
@@ -542,6 +544,8 @@ typedef struct cram_slice {
     cram_block **block;
     cram_block **block_by_id;
 
+    sqc_SQCCodec_t *sqc_qe;
+
     /* State used during encoding/decoding */
     int last_apos, max_apos;
 
@@ -759,6 +763,8 @@ typedef struct cram_fd {
     int lossy_read_names;               // boolean
     int tlen_approx;                    // max TLEN calculation offset.
     int tlen_zero;                      // If true, permit tlen 0 (=> tlen calculated)
+
+    sqc_option sqc; // SQC_TODO
 } cram_fd;
 
 // Translation of required fields to cram data series

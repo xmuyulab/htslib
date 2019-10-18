@@ -165,7 +165,8 @@ typedef struct htsFormat {
 //  - fp is used directly in samtools (up to and including current develop)
 //  - line is used directly in bcftools (up to and including current develop)
 typedef struct {
-    uint32_t is_bin:1, is_write:1, is_be:1, is_cram:1, is_bgzf:1, dummy:27;
+//    uint32_t is_bin:1, is_write:1, is_be:1, is_cram:1, is_bgzf:1, dummy:27;
+	uint32_t is_bin:1, is_write:1, is_be:1, is_cram:1, is_bgzf:1, is_sqc:2, dummy:25; // SQC_TODO ?
     int64_t lineno;
     kstring_t line;
     char *fn, *fn_aux;

@@ -746,6 +746,10 @@ int cram_dependent_data_series(cram_fd *fd,
         s->data_series = CRAM_ALL;
 
         for (i = 0; i < s->hdr->num_blocks; i++) {
+        	if (fd->sqc.sqc_dec) {
+        		if (s->block[i]->content_id == DS_QS)
+        			continue; // SQC_TODO: do not decode quality values at this moment
+        	}
             if (cram_uncompress_block(s->block[i]))
                 return -1;
         }
@@ -1192,14 +1196,43 @@ static inline void add_md_char(cram_slice *s, int decode_md, char c, int32_t *md
     }
 }
 
+#define EXTENDED_CIGAR 1
+// print extended cigar
+static unsigned int num_digits(unsigned int n)
+{
+    static unsigned int a[5] = {0, 0xa, 0x64, 0x3E8, 0x2710};
+    int i; 
+    for(i = 0; i < 5; i++)
+        if(n >= a[i] && n < a[i+1])
+            return (i+1);
+    printf("error: num_digits overflow\n");
+    return 6;
+}
+
+static unsigned int print_cigar(char *cig, int cig_len, char cig_op)
+{
+    if (cig_len) {
+        sprintf(cig, "%d%c", cig_len, cig_op);
+        return num_digits(cig_len)+1;
+    }
+    return 0;
+}
+
 /*
  * Internal part of cram_decode_slice().
  * Generates the sequence, quality and cigar components.
  */
+#if EXTENDED_CIGAR
+static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
+                           cram_block *blk, cram_record *cr, SAM_hdr *bfd,
+                           int cf, char *seq, char *qual,
+                           int has_MD, int has_NM, char * ext_cig) {
+#else
 static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
                            cram_block *blk, cram_record *cr, SAM_hdr *bfd,
                            int cf, char *seq, char *qual,
                            int has_MD, int has_NM) {
+#endif
     int prev_pos = 0, f, r = 0, out_sz = 1;
     int seq_pos = 1;
     int cig_len = 0, ref_pos = cr->apos;
@@ -1242,6 +1275,11 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
     if (!(ds & (CRAM_FC | CRAM_FP)))
         goto skip_cigar;
 
+#if EXTENDED_CIGAR
+        char * ext_cig_ptr = ext_cig;
+        char pre_cig_op = '\0', cur_cig_op = '\0';
+        int pre_cig_len = 0, cur_cig_len = 0;        
+#endif
     for (f = 0; f < fn; f++) {
         int32_t pos = 0;
         char op;
@@ -1277,7 +1315,9 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
             hts_log_error("Feature position %d before start of read", pos);
             return -1;
         }
-
+#if EXTENDED_CIGAR
+        cur_cig_len = pos - seq_pos;
+#endif
         if (pos > seq_pos) {
             if (pos > cr->len+1)
                 return -1;
@@ -1341,14 +1381,35 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
             if (cig_len && cig_op != BAM_CMATCH) {
                 cigar[ncigar++] = (cig_len<<4) + cig_op;
                 cig_len = 0;
+#if EXTENDED_CIGAR
+                cur_cig_len = 0; 
+#endif
             }
             cig_op = BAM_CMATCH;
+#endif
+
+#if EXTENDED_CIGAR
+            cur_cig_len = pos - seq_pos;
 #endif
             cig_len += pos - seq_pos;
             ref_pos += pos - seq_pos;
             seq_pos = pos;
         }
 
+#if EXTENDED_CIGAR
+        if (cur_cig_len) {
+            cur_cig_op = (cig_op == BAM_CMATCH) ? '=' : BAM_CIGAR_STR[cig_op];
+        if (pre_cig_op == cur_cig_op) {
+            pre_cig_len += cur_cig_len;
+        } else {
+            // if (pre_cig_len) {
+                ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                // printf("%d%c ", pre_cig_len, pre_cig_op);
+            // } 
+            pre_cig_len = cur_cig_len;
+            pre_cig_op = cur_cig_op;
+        }}
+#endif    
         prev_pos = pos;
 
         if (!(ds & CRAM_FC))
@@ -1403,6 +1464,18 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
                 cig_op = BAM_CSOFT_CLIP;
                 seq_pos += out_sz2;
             }
+#if EXTENDED_CIGAR
+            if (pre_cig_op == op) {
+                pre_cig_len += out_sz2;
+            } else {
+                // if (pre_cig_len) {
+                    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                    // printf("%d%c ", pre_cig_len, pre_cig_op);
+                // }
+                pre_cig_len = out_sz2; 
+                pre_cig_op = op;
+            }
+#endif
             break;
         }
 
@@ -1461,6 +1534,18 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
             cig_len++;
             seq_pos++;
             ref_pos++;
+#if EXTENDED_CIGAR
+            if (pre_cig_op == op) {
+                pre_cig_len ++;
+            } else {
+                // if (pre_cig_len) {
+                    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                    // printf("%d%c ", pre_cig_len, pre_cig_op);
+                // }
+                pre_cig_op = op; 
+                pre_cig_len = 1;
+            }
+#endif            
             break;
         }
 
@@ -1511,6 +1596,18 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
                 cig_op = BAM_CDEL;
                 cig_len += i32;
                 ref_pos += i32;
+#if EXTENDED_CIGAR                
+                if (pre_cig_op == op) {
+                    pre_cig_len += cig_len;
+                } else {
+                    // if (pre_cig_len) {
+                        ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                        // printf("%d%c ", pre_cig_len, pre_cig_op); 
+                    // }                        
+                    pre_cig_op = op; 
+                    pre_cig_len = cig_len;
+                }
+#endif
                 //printf("  %d: DL = %d (ret %d)\n", f, i32, r);
             }
             break;
@@ -1537,6 +1634,18 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
                 nm      += out_sz2;
                 //printf("  %d: IN(I) = %.*s (ret %d, out_sz %d)\n", f, out_sz2, dat, r, out_sz2);
             }
+#if EXTENDED_CIGAR
+            if (pre_cig_op == op) {
+                pre_cig_len += out_sz2;
+            } else {
+                // if (pre_cig_len) {
+                    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                    // printf("%d%c ", pre_cig_len, pre_cig_op); 
+                // }
+                pre_cig_op = op; 
+                pre_cig_len = out_sz2;
+            }
+#endif
             break;
         }
 
@@ -1557,6 +1666,18 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
             cig_len++;
             seq_pos++;
             nm++;
+#if EXTENDED_CIGAR            
+            if (pre_cig_op == 'I') {
+                pre_cig_len++;
+            } else {
+                // if (pre_cig_len) {
+                    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                    // printf("%d%c ", pre_cig_len, pre_cig_op);
+                // }
+                pre_cig_op = 'I'; 
+                pre_cig_len = 1;
+            }
+#endif            
             break;
         }
 
@@ -1672,10 +1793,13 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
                 }
             }
             if (ds & CRAM_QS) {
+            	// SQC_TODO:
+            	if (fd->sqc.sqc_dec == 0) {
                 if (!c->comp_hdr->codecs[DS_QS]) return -1;
                 r |= c->comp_hdr->codecs[DS_QS]
                                 ->decode(s, c->comp_hdr->codecs[DS_QS], blk,
                                          (char *)&qual[pos-1], &out_sz);
+		} // else if enable sqc: do nothing on qual here
             }
 #ifdef USE_X
             cig_op = BAM_CBASE_MISMATCH;
@@ -1686,10 +1810,24 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
             seq_pos++;
             ref_pos++;
             //printf("  %d: BA/QS(B) = %c/%d (ret %d)\n", f, i32, qc, r);
+#if EXTENDED_CIGAR
+            if (pre_cig_op == 'B') {
+                pre_cig_len++;
+            } else {
+                // if (pre_cig_len) {
+                    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                    // printf("%d%c ", pre_cig_len, pre_cig_op);
+                // }
+                pre_cig_op = 'B'; // ???
+                pre_cig_len = 1; 
+            }
+#endif                
             break;
         }
 
         case 'Q': { // Quality score; QS
+		// SQC_TODO
+		if (fd->sqc.sqc_dec == 0) {
             if (ds & CRAM_QS) {
                 if (!c->comp_hdr->codecs[DS_QS]) return -1;
                 r |= c->comp_hdr->codecs[DS_QS]
@@ -1697,6 +1835,7 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
                                          (char *)&qual[pos-1], &out_sz);
                 //printf("  %d: QS = %d (ret %d)\n", f, qc, r);
             }
+		}
             break;
         }
 
@@ -1714,6 +1853,18 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
                 cig_op = BAM_CHARD_CLIP;
                 cig_len += i32;
             }
+#if EXTENDED_CIGAR            
+            if (pre_cig_op == op) {
+                pre_cig_len += cig_len;
+            } else {
+                // if (pre_cig_len) {
+                    ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                    // printf("%d%c ", pre_cig_len, pre_cig_op);
+                // }
+                pre_cig_op = op;
+                pre_cig_len = cig_len; 
+            }
+#endif            
             break;
         }
 
@@ -1837,6 +1988,20 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
         cig_op = BAM_CMATCH;
 #endif
         cig_len += cr->len - seq_pos+1;
+#if EXTENDED_CIGAR        
+        cur_cig_op = (cig_op == BAM_CMATCH) ? '=' : BAM_CIGAR_STR[cig_op];
+        cur_cig_len = cr->len - seq_pos + 1;
+        if (pre_cig_op == cur_cig_op) {
+            pre_cig_len += cur_cig_len;
+        } else {
+            // if (pre_cig_len) {
+                ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+                // printf("%d%c ", pre_cig_len, pre_cig_op);
+            // }
+            pre_cig_op = cur_cig_op; 
+            pre_cig_len = cur_cig_len; 
+        }
+#endif
     }
 
  skip_cigar:
@@ -1856,6 +2021,12 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
 
         cigar[ncigar++] = (cig_len<<4) + cig_op;
     }
+#if EXTENDED_CIGAR
+    // if (pre_cig_len != 0) {
+        ext_cig_ptr += print_cigar(ext_cig_ptr, pre_cig_len, pre_cig_op);
+        // printf("%d%c\n", pre_cig_len, pre_cig_op);
+    // }
+#endif
 
     cr->ncigar = ncigar - cr->cigar;
     cr->aend = ref_pos;
@@ -1875,10 +2046,12 @@ static int cram_decode_seq(cram_fd *fd, cram_container *c, cram_slice *s,
         int32_t out_sz2 = cr->len;
 
         if (ds & CRAM_QS) {
+		if (fd->sqc.sqc_dec == 0) {
             if (!c->comp_hdr->codecs[DS_QS]) return -1;
             r |= c->comp_hdr->codecs[DS_QS]
                             ->decode(s, c->comp_hdr->codecs[DS_QS], blk,
                                      qual, &out_sz2);
+		}
         }
     }
 
@@ -2681,6 +2854,11 @@ int cram_decode_slice(cram_fd *fd, cram_container *c, cram_slice *s,
                 memset(seq, '=', cr->len);
         }
 
+#if EXTENDED_CIGAR
+            char ext_cig[1024];
+            memset(ext_cig, 0, sizeof(ext_cig));
+            ext_cig[0] = '*'; // by default, for unmapped sam records
+#endif
         if (!(bf & BAM_FUNMAP)) {
             if ((ds & CRAM_AP) && cr->apos <= 0) {
                 hts_log_error("Read has alignment position %d but no unmapped flag",
@@ -2689,8 +2867,13 @@ int cram_decode_slice(cram_fd *fd, cram_container *c, cram_slice *s,
             }
             /* Decode sequence and generate CIGAR */
             if (ds & (CRAM_SEQ | CRAM_MQ)) {
+#if EXTENDED_CIGAR
+                r |= cram_decode_seq(fd, c, s, blk, cr, bfd, cf, seq, qual,
+                                     has_MD, has_NM, ext_cig);
+#else
                 r |= cram_decode_seq(fd, c, s, blk, cr, bfd, cf, seq, qual,
                                      has_MD, has_NM);
+#endif
                 if (r) return r;
             } else {
                 cr->cigar = 0;
@@ -2729,7 +2912,19 @@ int cram_decode_slice(cram_fd *fd, cram_container *c, cram_slice *s,
                     memset(qual, 255, cr->len);
             }
         }
+         if (fd->sqc.sqc_dec)
+             sqc_addRecordToBlock_cr(s->sqc_qe, cr, seq, ext_cig, fd->sqc);
+        // }}
     }
+
+    // {{ SQC_TODO
+     if (fd->sqc.sqc_dec && !fd->sqc.sqc_cut) {
+         // decode quality values, and output to s->qual_blk
+         sqc_decodeBlock(s->sqc_qe, s->block_by_id[DS_QS], s->qual_blk, fd->sqc);
+     } else if (fd->sqc.sqc_cut) {
+         sqc_cutBlock(s->sqc_qe, s->block_by_id[DS_QS], fd->sqc.sqc_bpq);
+     }
+    // }}
 
     pthread_mutex_lock(&fd->ref_lock);
     if (refs) {
