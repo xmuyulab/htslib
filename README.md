@@ -1,3 +1,7 @@
+This is the htslib with supporting of ScaleQC, integrated with official htslib version 1.9-dirty.
+
+To use ScaleQC, use samtools at https://github.com/xmuyulab/samtools coupled with this htslib.
+
 HTSlib is an implementation of a unified C library for accessing common file
 formats, such as [SAM, CRAM and VCF][1], used for high-throughput sequencing
 data, and is the core library used by [samtools][2] and [bcftools][3].
