@@ -266,7 +266,9 @@ void SQCCodec::decodeBlock(cram_block *b, cram_block *bout)
 
 size_t SQCCodec::writeBlock(cram_block *b)
 {
-	int header_len = writeQualitySegMinMaxTable(b->data);
+	uint8_t *header_buf = new uint8_t[DATA_BUF_SIZE];
+	int header_len = writeQualitySegMinMaxTable(header_buf);
+	
 	b->comp_size = compressedQualSize_ + header_len; 
 	b->method = AGI_SQC;
 	b->uncomp_size = uncompressedQualSize_;
@@ -274,6 +276,8 @@ size_t SQCCodec::writeBlock(cram_block *b)
 	if (b->comp_size > (int32_t)(b->alloc))
 		BLOCK_GROW(b, b->comp_size);
 
+	// write header bytes
+	memcpy(b->data, header_buf, header_len);
 	// write data bytes
 	memcpy(b->data+header_len, buf_.dat, compressedQualSize_);
 
@@ -285,6 +289,7 @@ size_t SQCCodec::writeBlock(cram_block *b)
 		printf("%03u, ", (uint32_t)(p[j]));
 	printf("\n");
 #endif
+	delete[] header_buf;
 	return b->comp_size; // return the total number of bytes written
 }
 
@@ -689,7 +694,7 @@ int16_t SQCCodec::encodeQualBitshifting(DataBuffer & buf)
 					seg_pos = 0;
 				}
 			}
-			continue;
+			// continue;
 		}
 		genoUncVecSize_ = gu_idx;
 		return 0;
