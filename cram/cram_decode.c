@@ -2898,6 +2898,7 @@ int cram_decode_slice(cram_fd *fd, cram_container *c, cram_slice *s,
                 if (r) return r;
             }
 
+            if (!fd->sqc.sqc_dec) {
             if ((ds & CRAM_CF) && (cf & CRAM_FLAG_PRESERVE_QUAL_SCORES)) {
                 out_sz2 = cr->len;
                 if (ds & CRAM_QS && cr->len >= 0) {
@@ -2911,6 +2912,10 @@ int cram_decode_slice(cram_fd *fd, cram_container *c, cram_slice *s,
                 if (ds & CRAM_RL)
                     memset(qual, 255, cr->len);
             }
+            } else
+            {
+                memset(qual, 255, cr->len);
+            }            
         }
          if (fd->sqc.sqc_dec)
              sqc_addRecordToBlock_cr(s->sqc_qe, cr, seq, ext_cig, fd->sqc);
